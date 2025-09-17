@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -265,6 +267,11 @@ func (d *OEDDict) SearchPrefix(prefix string) ([]string, error) {
 	return results, nil
 }
 
+func init() {
+	// Seed the random number generator
+	rand.Seed(time.Now().UnixNano())
+}
+
 // GetRandomEntry returns a random dictionary entry
 func (d *OEDDict) GetRandomEntry() (*Entry, error) {
 	// Get file size to determine random position
@@ -273,22 +280,43 @@ func (d *OEDDict) GetRandomEntry() (*Entry, error) {
 		return nil, err
 	}
 
-	// Read a random line from the index
-	d.indexFile.Seek(info.Size()/2, 0) // Start from middle
+	// Generate a random position in the file
+	// Avoid the very end to ensure we can read a complete line
+	maxOffset := info.Size() - 1000
+	if maxOffset <= 0 {
+		maxOffset = info.Size() / 2
+	}
+	randomOffset := rand.Int63n(maxOffset)
 
-	scanner := bufio.NewScanner(d.indexFile)
-	// Skip partial line
-	if scanner.Scan() {
-		// Now read the next complete line
-		if scanner.Scan() {
-			line := scanner.Text()
-			parts := strings.Split(line, "\t")
-			if len(parts) >= 2 {
-				offset, err := strconv.ParseInt(parts[1], 10, 64)
-				if err == nil {
-					return d.readEntry(offset)
-				}
-			}
+	// Seek to the random position
+	_, err = d.indexFile.Seek(randomOffset, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	reader := bufio.NewReader(d.indexFile)
+
+	// Skip the partial line at the random position
+	_, err = reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		// If we can't read, try from the beginning
+		d.indexFile.Seek(0, 0)
+		reader = bufio.NewReader(d.indexFile)
+	}
+
+	// Now read the next complete line
+	line, err := reader.ReadString('\n')
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+
+	// Parse the line
+	line = strings.TrimSpace(line)
+	parts := strings.Split(line, "\t")
+	if len(parts) >= 2 {
+		offset, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil {
+			return d.readEntry(offset)
 		}
 	}
 
