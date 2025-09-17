@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//Users/pdfinn/Library/Mobile Documents/com~apple~CloudDocs/Oxford English Dictonary 2nd Ed (v1.14)/**)",
+      "Read(//Users/pdfinn/Library/Mobile Documents/com~apple~CloudDocs/Oxford English Dictonary 2nd Ed (v1.14)/For Plan 9/**)",
+      "Read(//Users/pdfinn/Library/Mobile Documents/com~apple~CloudDocs/Oxford English Dictonary 2nd Ed (v1.14)/For Plan 9/oed2/**)",
+      "Read(//Users/pdfinn/github.com/pdfinn/plan9/dict/**)",
+      "Read(//Users/pdfinn/github.com/pdfinn/plan9/src/cmd/dict/**)",
+      "WebFetch(domain:github.com)",
+      "Bash(go mod init:*)",
+      "Bash(go get:*)",
+      "Bash(chmod:*)",
+      "Bash(go build:*)",
+      "Bash(go mod:*)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(go doc:*)",
+      "Bash(./oedmcp:*)",
+      "Bash(./test_server.sh:*)",
+      "Read(//Users/pdfinn/Library/Application Support/Claude/**)",
+      "Bash(python3:*)",
+      "Bash(./test_serendipity.sh:*)",
+      "Bash(./test_etymology.sh:*)",
+      "Bash(./build.sh)",
+      "Bash(go test:*)",
+      "Bash(./run_tests.sh)",
+      "Bash(git init:*)",
+      "Bash(git add:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

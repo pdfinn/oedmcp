@@ -1,0 +1,44 @@
+# Binaries
+oedmcp
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Go build cache
+/go.sum
+/vendor/
+
+# OED data files (NEVER commit these!)
+*.DAT
+*.dat
+oed2
+oed2index
+oed2index.original
+*.iso
+
+# Configuration files with actual paths
+oed_config.json
+config.json
+
+# Local test files
+test_*.sh
+*.log
+
+# IDE files
+.idea/
+*.swp
+*.swo
+*~
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Claude Desktop specific config (contains local paths)
+claude_desktop_config.json
