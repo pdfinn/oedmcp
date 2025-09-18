@@ -30,7 +30,10 @@
       "Bash(gh repo create:*)",
       "Read(//Users/pdfinn/Library/Logs/Claude/**)",
       "Bash(git commit:*)",
-      "Bash(git merge:*)"
+      "Bash(git merge:*)",
+      "Bash(git restore:*)",
+      "Bash(./test_formats.sh:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
