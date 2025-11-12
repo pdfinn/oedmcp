@@ -2,16 +2,29 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/pdfinn/oedmcp/config"
 	"github.com/pdfinn/oedmcp/dict"
+)
+
+var (
+	enableHTTP   = flag.Bool("enable-http", false, "Enable HTTP transport in addition to stdio")
+	httpAddr     = flag.String("http-addr", "127.0.0.1:7087", "HTTP server bind address")
+	httpAuthType = flag.String("http-auth-type", "none", "HTTP authentication: none, bearer, basic")
+	logLevel     = flag.String("log-level", "info", "Log level: debug, info, warning, error")
+	startTime    = time.Now()
+	version      = "1.0.0"
 )
 
 // Format types for OED entries
@@ -232,16 +245,27 @@ func extractPronunciation(def string) string {
 }
 
 func main() {
+	// Parse command-line flags
+	flag.Parse()
+
+	// Configure logging based on log level
+	configureLogging(*logLevel)
+
 	// Load configuration
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v\n\nPlease ensure OED data files are available and configured.\nSee README.md for setup instructions.", err)
 	}
 
-	// Initialize the OED dictionary
-	oedDict, err := dict.NewOEDDict(cfg.DataPath, cfg.IndexPath)
+	// Initialize the OED dictionary (with degraded mode support)
+	var oedDict *dict.OEDDict
+	oedDict, err = dict.NewOEDDict(cfg.DataPath, cfg.IndexPath)
 	if err != nil {
-		log.Fatalf("Failed to initialize OED dictionary: %v", err)
+		log.Printf("WARNING: Failed to initialize OED dictionary: %v", err)
+		log.Printf("Server starting in degraded mode - dictionary operations will return errors")
+		oedDict = dict.NewDegradedDict(cfg.DataPath, cfg.IndexPath, err)
+	} else {
+		log.Printf("OED dictionary initialized successfully")
 	}
 	defer oedDict.Close()
 
@@ -443,9 +467,204 @@ func main() {
 		return mcp.NewToolResultText(strings.Join(results, "\n\n")), nil
 	})
 
-	// Start the server
+	// Start HTTP server if enabled (runs in background)
+	if *enableHTTP {
+		go startHTTPServer(s, *httpAddr, *httpAuthType, oedDict)
+		log.Printf("HTTP transport enabled on %s", *httpAddr)
+	}
+
+	// Start stdio server (blocks on main thread)
+	log.Printf("Starting stdio transport (MCP protocol)")
 	if err := server.ServeStdio(s); err != nil {
 		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// configureLogging sets up logging based on the log level
+func configureLogging(level string) {
+	// Basic log configuration - could be enhanced with actual log level filtering
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+
+	switch strings.ToLower(level) {
+	case "debug":
+		log.SetPrefix("[DEBUG] ")
+	case "info":
+		log.SetPrefix("[INFO] ")
+	case "warning":
+		log.SetPrefix("[WARNING] ")
+	case "error":
+		log.SetPrefix("[ERROR] ")
+	default:
+		log.SetPrefix("[INFO] ")
+	}
+}
+
+// startHTTPServer starts the HTTP server with SSE transport and health endpoints
+func startHTTPServer(mcpServer *server.MCPServer, addr string, authType string, oedDict *dict.OEDDict) {
+	// Create SSE server for MCP protocol
+	sseServer := server.NewSSEServer(mcpServer,
+		server.WithStaticBasePath("/"),
+		server.WithSSEEndpoint("/sse"),
+		server.WithMessageEndpoint("/message"),
+	)
+
+	mux := http.NewServeMux()
+
+	// Mount SSE handlers for MCP protocol over HTTP
+	mux.Handle("/sse", sseServer)
+	mux.Handle("/message", sseServer)
+
+	// Add health endpoint
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		handleHealth(w, r, oedDict)
+	})
+
+	// Add metrics endpoint
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+		handleMetrics(w, r)
+	})
+
+	// Apply authentication middleware if configured
+	handler := applyAuth(mux, authType)
+
+	log.Printf("HTTP server starting on %s", addr)
+	log.Printf("  - SSE endpoint: http://%s/sse", addr)
+	log.Printf("  - Health endpoint: http://%s/health", addr)
+	log.Printf("  - Metrics endpoint: http://%s/metrics", addr)
+
+	httpServer := &http.Server{
+		Addr:         addr,
+		Handler:      handler,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("HTTP server error: %v", err)
+	}
+}
+
+// handleHealth provides health check endpoint
+func handleHealth(w http.ResponseWriter, r *http.Request, oedDict *dict.OEDDict) {
+	healthy, connections := oedDict.HealthStatus()
+
+	status := "healthy"
+	if !healthy {
+		status = "degraded"
+	}
+
+	response := map[string]interface{}{
+		"status":         status,
+		"service":        "oedmcp",
+		"version":        version,
+		"uptime_seconds": int(time.Since(startTime).Seconds()),
+		"connections":    connections,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	// Always return 200 OK - monitoring systems check the status field
+	// A degraded service is still responding to health checks
+	w.WriteHeader(http.StatusOK)
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Error encoding health response: %v", err)
+	}
+}
+
+// handleMetrics provides Prometheus-style metrics endpoint
+func handleMetrics(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+
+	uptime := time.Since(startTime).Seconds()
+
+	// Basic metrics - can be enhanced with prometheus/client_golang
+	fmt.Fprintf(w, "# HELP oedmcp_uptime_seconds Server uptime in seconds\n")
+	fmt.Fprintf(w, "# TYPE oedmcp_uptime_seconds gauge\n")
+	fmt.Fprintf(w, "oedmcp_uptime_seconds %.2f\n", uptime)
+
+	fmt.Fprintf(w, "\n# HELP oedmcp_build_info Build information\n")
+	fmt.Fprintf(w, "# TYPE oedmcp_build_info gauge\n")
+	fmt.Fprintf(w, "oedmcp_build_info{version=\"%s\"} 1\n", version)
+}
+
+// applyAuth applies authentication middleware based on auth type
+func applyAuth(handler http.Handler, authType string) http.Handler {
+	switch strings.ToLower(authType) {
+	case "bearer":
+		return bearerAuthMiddleware(handler)
+	case "basic":
+		return basicAuthMiddleware(handler)
+	case "none":
+		fallthrough
+	default:
+		return handler
+	}
+}
+
+// bearerAuthMiddleware implements bearer token authentication
+func bearerAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get token from environment
+		expectedToken := os.Getenv("OED_HTTP_AUTH_TOKEN")
+		if expectedToken == "" {
+			log.Printf("WARNING: bearer auth enabled but OED_HTTP_AUTH_TOKEN not set")
+			http.Error(w, "Authentication not configured", http.StatusInternalServerError)
+			return
+		}
+
+		// Extract bearer token from Authorization header
+		authHeader := r.Header.Get("Authorization")
+		if authHeader == "" {
+			http.Error(w, "Missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		// Check format: "Bearer <token>"
+		parts := strings.SplitN(authHeader, " ", 2)
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			http.Error(w, "Invalid Authorization header format", http.StatusUnauthorized)
+			return
+		}
+
+		if parts[1] != expectedToken {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// basicAuthMiddleware implements HTTP basic authentication
+func basicAuthMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Get credentials from environment
+		expectedUser := os.Getenv("OED_HTTP_AUTH_USER")
+		expectedPass := os.Getenv("OED_HTTP_AUTH_PASS")
+
+		if expectedUser == "" || expectedPass == "" {
+			log.Printf("WARNING: basic auth enabled but OED_HTTP_AUTH_USER/PASS not set")
+			http.Error(w, "Authentication not configured", http.StatusInternalServerError)
+			return
+		}
+
+		// Get credentials from request
+		user, pass, ok := r.BasicAuth()
+		if !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="OED MCP Server"`)
+			http.Error(w, "Missing credentials", http.StatusUnauthorized)
+			return
+		}
+
+		if user != expectedUser || pass != expectedPass {
+			w.Header().Set("WWW-Authenticate", `Basic realm="OED MCP Server"`)
+			http.Error(w, "Invalid credentials", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }

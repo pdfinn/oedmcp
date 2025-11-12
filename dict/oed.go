@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -24,6 +25,11 @@ type Entry struct {
 type OEDDict struct {
 	dataFile  *os.File
 	indexFile *os.File
+	dataPath  string
+	indexPath string
+	healthy   bool
+	lastError error
+	mu        sync.RWMutex
 }
 
 func NewOEDDict(dataPath, indexPath string) (*OEDDict, error) {
@@ -41,7 +47,23 @@ func NewOEDDict(dataPath, indexPath string) (*OEDDict, error) {
 	return &OEDDict{
 		dataFile:  dataFile,
 		indexFile: indexFile,
+		dataPath:  dataPath,
+		indexPath: indexPath,
+		healthy:   true,
+		lastError: nil,
 	}, nil
+}
+
+// NewDegradedDict creates a dictionary instance in degraded mode (no data files)
+func NewDegradedDict(dataPath, indexPath string, err error) *OEDDict {
+	return &OEDDict{
+		dataFile:  nil,
+		indexFile: nil,
+		dataPath:  dataPath,
+		indexPath: indexPath,
+		healthy:   false,
+		lastError: err,
+	}
 }
 
 func (d *OEDDict) Close() {
@@ -54,6 +76,11 @@ func (d *OEDDict) Close() {
 }
 
 func (d *OEDDict) LookupWord(word string) (*Entry, error) {
+	// Check if dictionary is healthy
+	if !d.IsHealthy() {
+		return nil, fmt.Errorf("dictionary unavailable: %w", d.LastError())
+	}
+
 	// Normalize the word for lookup
 	normalizedWord := strings.ToLower(strings.TrimSpace(word))
 
@@ -237,8 +264,81 @@ func cleanupTags(text string) string {
 	return strings.TrimSpace(result)
 }
 
+// IsHealthy returns whether the dictionary is in a healthy state
+func (d *OEDDict) IsHealthy() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.healthy
+}
+
+// LastError returns the last error encountered
+func (d *OEDDict) LastError() error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.lastError
+}
+
+// HealthStatus returns detailed health information
+func (d *OEDDict) HealthStatus() (healthy bool, connections map[string]interface{}) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	var dataFileSize, indexFileSize int64
+	dataReadable := d.dataFile != nil
+	indexReadable := d.indexFile != nil
+
+	if dataReadable {
+		if info, err := d.dataFile.Stat(); err == nil {
+			dataFileSize = info.Size()
+		}
+	}
+
+	if indexReadable {
+		if info, err := d.indexFile.Stat(); err == nil {
+			indexFileSize = info.Size()
+		}
+	}
+
+	connections = map[string]interface{}{
+		"data_file": map[string]interface{}{
+			"status":    statusString(dataReadable),
+			"path":      d.dataPath,
+			"size_mb":   float64(dataFileSize) / (1024 * 1024),
+			"readable":  dataReadable,
+			"last_error": errorString(d.lastError),
+		},
+		"index_file": map[string]interface{}{
+			"status":     statusString(indexReadable),
+			"path":       d.indexPath,
+			"size_mb":    float64(indexFileSize) / (1024 * 1024),
+			"readable":   indexReadable,
+			"last_error": errorString(d.lastError),
+		},
+	}
+
+	return d.healthy, connections
+}
+
+func statusString(healthy bool) string {
+	if healthy {
+		return "connected"
+	}
+	return "disconnected"
+}
+
+func errorString(err error) interface{} {
+	if err == nil {
+		return nil
+	}
+	return err.Error()
+}
+
 // SearchPrefix returns entries that start with the given prefix
 func (d *OEDDict) SearchPrefix(prefix string) ([]string, error) {
+	if !d.IsHealthy() {
+		return nil, fmt.Errorf("dictionary unavailable: %w", d.LastError())
+	}
+
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	var results []string
 
@@ -274,6 +374,10 @@ func init() {
 
 // GetRandomEntry returns a random dictionary entry
 func (d *OEDDict) GetRandomEntry() (*Entry, error) {
+	if !d.IsHealthy() {
+		return nil, fmt.Errorf("dictionary unavailable: %w", d.LastError())
+	}
+
 	// Get file size to determine random position
 	info, err := d.indexFile.Stat()
 	if err != nil {

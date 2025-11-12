@@ -13,6 +13,10 @@ An MCP (Model Context Protocol) server that provides AI assistants with access t
 - 🔤 **Prefix Search**: Find words starting with specific prefixes
 - 🎲 **Random Word**: Discover random dictionary entries
 - 📦 **Batch Lookup**: Look up multiple words simultaneously
+- 🌐 **Dual Transport**: Supports both stdio (MCP) and HTTP/SSE transports simultaneously
+- 🏥 **Health Monitoring**: Built-in health check and metrics endpoints
+- 🔒 **Authentication**: Optional bearer token or basic auth for HTTP endpoints
+- 💪 **Degraded Mode**: Continues running even if dictionary files unavailable
 
 ## Prerequisites
 
@@ -101,6 +105,100 @@ Add this to your `mcpServers` section:
 ### 5. Restart Claude Desktop
 
 The OED tools will be available after restarting Claude Desktop.
+
+## Command-Line Options
+
+The OED MCP server supports the following command-line flags:
+
+```bash
+./oedmcp [options]
+```
+
+### Transport Options
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--enable-http` | Enable HTTP transport in addition to stdio | `false` |
+| `--http-addr <addr:port>` | HTTP server bind address | `127.0.0.1:7087` |
+| `--http-auth-type <type>` | Authentication type: `none`, `bearer`, `basic` | `none` |
+| `--log-level <level>` | Logging level: `debug`, `info`, `warning`, `error` | `info` |
+
+### Examples
+
+**Stdio only (default - for Claude Desktop)**:
+```bash
+./oedmcp
+```
+
+**Dual transport (stdio + HTTP for monitoring)**:
+```bash
+./oedmcp --enable-http --http-addr 127.0.0.1:7087
+```
+
+**With bearer token authentication**:
+```bash
+export OED_HTTP_AUTH_TOKEN="your-secret-token"
+./oedmcp --enable-http --http-auth-type bearer
+```
+
+**With basic authentication**:
+```bash
+export OED_HTTP_AUTH_USER="admin"
+export OED_HTTP_AUTH_PASS="password"
+./oedmcp --enable-http --http-auth-type basic
+```
+
+**Bind to all interfaces (use with caution)**:
+```bash
+./oedmcp --enable-http --http-addr 0.0.0.0:7087
+```
+
+### HTTP Endpoints
+
+When `--enable-http` is enabled, the following endpoints are available:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/sse` | GET | Server-Sent Events endpoint for MCP protocol over HTTP |
+| `/message` | POST | Message endpoint for MCP protocol over HTTP |
+| `/health` | GET | Health check endpoint (JSON) |
+| `/metrics` | GET | Prometheus-style metrics |
+
+**Health Check Response Example**:
+```json
+{
+  "status": "healthy",
+  "service": "oedmcp",
+  "version": "1.0.0",
+  "uptime_seconds": 3600,
+  "connections": {
+    "data_file": {
+      "status": "connected",
+      "path": "/path/to/oed2",
+      "size_mb": 520.5,
+      "readable": true,
+      "last_error": null
+    },
+    "index_file": {
+      "status": "connected",
+      "path": "/path/to/oed2index",
+      "size_mb": 5.6,
+      "readable": true,
+      "last_error": null
+    }
+  }
+}
+```
+
+### Degraded Mode
+
+If dictionary data files are unavailable at startup, the server will start in **degraded mode**:
+- Server process starts successfully (doesn't fail)
+- Health endpoint returns `"status": "degraded"`
+- MCP tool calls return informative errors
+- Allows monitoring systems to detect the issue without blocking entire stack
+
+This is particularly useful in containerized or distributed deployments where the server should start even if data volumes aren't yet mounted.
 
 ## Usage
 
