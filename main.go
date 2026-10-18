@@ -300,6 +300,10 @@ func main() {
 		includeEtym := request.GetBool("include_etymology", true)
 		format := request.GetString("format", FormatClean)
 
+		if !oedDict.IsHealthy() {
+			return mcp.NewToolResultError(fmt.Sprintf("dictionary unavailable: %v", oedDict.LastError())), nil
+		}
+
 		// Look up the word
 		entry, err := oedDict.LookupWord(word)
 		if err != nil {
@@ -383,6 +387,10 @@ func main() {
 		}
 		clean := request.GetBool("clean", true)
 
+		if !oedDict.IsHealthy() {
+			return mcp.NewToolResultError(fmt.Sprintf("dictionary unavailable: %v", oedDict.LastError())), nil
+		}
+
 		// Look up the word
 		entry, err := oedDict.LookupWord(word)
 		if err != nil {
@@ -443,6 +451,9 @@ func main() {
 		wordsStr := request.GetString("words", "")
 		if wordsStr == "" {
 			return mcp.NewToolResultError("words parameter is required"), nil
+		}
+		if !oedDict.IsHealthy() {
+			return mcp.NewToolResultError(fmt.Sprintf("dictionary unavailable: %v", oedDict.LastError())), nil
 		}
 
 		// Split comma-separated words
@@ -537,7 +548,7 @@ func startHTTPServer(mcpServer *server.MCPServer, addr string, authType string, 
 		Addr:         addr,
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
+		WriteTimeout: 0, // SSE streams are long-lived; a write deadline would cut them off
 		IdleTimeout:  120 * time.Second,
 	}
 

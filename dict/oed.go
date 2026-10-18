@@ -30,6 +30,7 @@ type OEDDict struct {
 	healthy   bool
 	lastError error
 	mu        sync.RWMutex
+	indexMu   sync.Mutex // serializes Seek+read on indexFile; dataFile uses ReadAt and needs no lock
 }
 
 func NewOEDDict(dataPath, indexPath string) (*OEDDict, error) {
@@ -100,6 +101,9 @@ func (d *OEDDict) LookupWord(word string) (*Entry, error) {
 }
 
 func (d *OEDDict) searchIndex(word string) (int64, error) {
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+
 	// Reset to beginning of index file
 	d.indexFile.Seek(0, 0)
 	scanner := bufio.NewScanner(d.indexFile)
@@ -127,15 +131,10 @@ func (d *OEDDict) searchIndex(word string) (int64, error) {
 }
 
 func (d *OEDDict) readEntry(offset int64) (*Entry, error) {
-	// Seek to the offset in the data file
-	_, err := d.dataFile.Seek(offset, 0)
-	if err != nil {
-		return nil, fmt.Errorf("failed to seek to offset: %w", err)
-	}
-
-	// Read the entry - we'll read a reasonable chunk and parse it
+	// Read the entry - we'll read a reasonable chunk and parse it.
+	// ReadAt is safe for concurrent use and fills the buffer unless it hits EOF.
 	buffer := make([]byte, 32768) // 32KB should be enough for most entries
-	n, err := d.dataFile.Read(buffer)
+	n, err := d.dataFile.ReadAt(buffer, offset)
 	if err != nil && err != io.EOF {
 		return nil, fmt.Errorf("failed to read data: %w", err)
 	}
@@ -342,11 +341,14 @@ func (d *OEDDict) SearchPrefix(prefix string) ([]string, error) {
 	prefix = strings.ToLower(strings.TrimSpace(prefix))
 	var results []string
 
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
+
 	d.indexFile.Seek(0, 0)
 	scanner := bufio.NewScanner(d.indexFile)
 
 	count := 0
-	maxResults := 20
+	maxResults := 50 // callers trim to their own limit (oed_search caps at 50)
 
 	for scanner.Scan() && count < maxResults {
 		line := scanner.Text()
@@ -377,6 +379,9 @@ func (d *OEDDict) GetRandomEntry() (*Entry, error) {
 	if !d.IsHealthy() {
 		return nil, fmt.Errorf("dictionary unavailable: %w", d.LastError())
 	}
+
+	d.indexMu.Lock()
+	defer d.indexMu.Unlock()
 
 	// Get file size to determine random position
 	info, err := d.indexFile.Stat()

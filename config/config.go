@@ -26,9 +26,7 @@ func LoadConfig() (*Config, error) {
 
 	// 2. Check for config file in current directory
 	if config.DataPath == "" || config.IndexPath == "" {
-		if err := loadFromFile("oed_config.json", config); err == nil {
-			return config, nil
-		}
+		loadFromFile("oed_config.json", config)
 	}
 
 	// 3. Check for config file in home directory
@@ -36,17 +34,13 @@ func LoadConfig() (*Config, error) {
 		homeDir, err := os.UserHomeDir()
 		if err == nil {
 			configPath := filepath.Join(homeDir, ".oed_mcp", "config.json")
-			if err := loadFromFile(configPath, config); err == nil {
-				return config, nil
-			}
+			loadFromFile(configPath, config)
 		}
 	}
 
 	// 4. Check for config in /etc
 	if config.DataPath == "" || config.IndexPath == "" {
-		if err := loadFromFile("/etc/oed_mcp/config.json", config); err == nil {
-			return config, nil
-		}
+		loadFromFile("/etc/oed_mcp/config.json", config)
 	}
 
 	// Validate that we have both paths
@@ -72,6 +66,17 @@ func loadFromFile(path string, config *Config) error {
 	}
 	defer file.Close()
 
-	decoder := json.NewDecoder(file)
-	return decoder.Decode(config)
+	// Decode separately so file values only fill paths that are still empty
+	// and never override ones already set by a higher-priority source.
+	var fromFile Config
+	if err := json.NewDecoder(file).Decode(&fromFile); err != nil {
+		return err
+	}
+	if config.DataPath == "" {
+		config.DataPath = fromFile.DataPath
+	}
+	if config.IndexPath == "" {
+		config.IndexPath = fromFile.IndexPath
+	}
+	return nil
 }
